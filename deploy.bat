@@ -1,66 +1,167 @@
 @echo off
-setlocal EnableDelayedExpansion
-title Raton Z - Production Deployment
+setlocal EnableExtensions EnableDelayedExpansion
+chcp 65001 >nul
+
+REM =====================================================================
+REM   Raton-Z · Despliegue automático a GitHub y GitHub Pages
+REM =====================================================================
+
+set "GH_USER=CoipoNorte"
+set "GH_REPO=Raton-Z"
+
+REM Rama donde vive el código y rama donde se publica la página
+set "MAIN_BRANCH=main"
+set "PAGES_BRANCH=gh-pages"
+
+REM =====================================================================
+REM   A partir de aquí no hace falta tocar nada
+REM =====================================================================
+
 cd /d "%~dp0"
-
 echo.
-echo   RATON Z - GitHub Pages
-echo   ----------------------
+echo   ======================================
+echo    Raton-Z - Despliegue a GitHub Pages
+echo   ======================================
+echo.
 
-:: 1. Validaciones del entorno
-where node >nul 2>&1 || (echo ERROR: Instala Node.js 22 o mas reciente. & exit /b 1)
-where git >nul 2>&1 || (echo ERROR: Instala Git para Windows. & exit /b 1)
-git rev-parse --is-inside-work-tree >nul 2>&1 || (echo ERROR: Clona el repositorio oficial primero. & exit /b 1)
-git remote get-url origin >nul 2>&1 || (echo ERROR: Configura el remote origin primero. & exit /b 1)
+set "REMOTE_URL=https://github.com/%GH_USER%/%GH_REPO%.git"
+set "PAGES_URL=https://%GH_USER%.github.io/%GH_REPO%/"
 
-:: Obtener la rama actual de forma segura
-for /f "delims=" %%b in ('git branch --show-current') do set "BRANCH=%%b"
-if not "!BRANCH!"=="main" if not "!BRANCH!"=="master" (
-  echo ERROR: Debes desplegar desde main o master. Rama actual: !BRANCH!
-  exit /b 1
+REM ---------- Comprobar herramientas ----------
+where git >nul 2>nul || (
+  echo   [!] No se encuentra Git. Instalalo desde https://git-scm.com/download/win
+  goto :fin_error
+)
+where node >nul 2>nul || (
+  echo   [!] No se encuentra Node.js. Instalalo desde https://nodejs.org/
+  goto :fin_error
+)
+where npm >nul 2>nul || (
+  echo   [!] No se encuentra npm. Reinstala Node.js desde https://nodejs.org/
+  goto :fin_error
+)
+where gh >nul 2>nul && set "HAS_GH=1"
+
+REM ---------- Dependencias ----------
+if not exist "node_modules\" (
+  echo   [1/6] Instalando dependencias...
+  call npm ci || goto :fin_error
+) else (
+  echo   [1/6] Dependencias ya instaladas.
 )
 
-echo [1/4] Instalando dependencias limpias (npm ci)...
-call npm ci
-if errorlevel 1 exit /b 1
+REM ---------- Compilar ----------
+echo   [2/6] Compilando la aplicacion para GitHub Pages...
+call npx tsc --noEmit || goto :fin_error
+call npm run build -- --base /%GH_REPO%/ || goto :fin_error
+if not exist "dist\index.html" (
+  echo   [!] La compilacion no genero dist\index.html
+  goto :fin_error
+)
+REM Evita que GitHub Pages procese el sitio con Jekyll
+type nul > "dist\.nojekyll"
 
-echo [2/4] Verificando tipos con TypeScript...
-call npx tsc --noEmit
-if errorlevel 1 exit /b 1
+REM ---------- Repositorio local ----------
+if not exist ".git\" (
+  echo   [3/6] Creando repositorio Git...
+  git init -b %MAIN_BRANCH% >nul 2>nul || (
+    git init >nul
+    git checkout -b %MAIN_BRANCH% >nul 2>nul
+  )
+) else (
+  echo   [3/6] Repositorio Git encontrado.
+)
 
-echo [3/4] Compilando para /Raton-Z/...
-call npm run build -- --base /Raton-Z/
+git remote get-url origin >nul 2>nul
 if errorlevel 1 (
-  echo ERROR: La compilacion fallo. Corrige los errores antes de desplegar.
-  exit /b 1
+  git remote add origin "%REMOTE_URL%"
+) else (
+  git remote set-url origin "%REMOTE_URL%"
+)
+
+REM ---------- Crear el repositorio remoto si hace falta ----------
+if defined HAS_GH (
+  gh auth status >nul 2>nul
+  if errorlevel 1 (
+    echo   [i] Iniciando sesion en GitHub...
+    gh auth login || goto :fin_error
+  )
+  gh repo view "%GH_USER%/%GH_REPO%" >nul 2>nul
+  if errorlevel 1 (
+    echo   [i] Creando el repositorio %GH_USER%/%GH_REPO% en GitHub...
+    gh repo create "%GH_USER%/%GH_REPO%" --public --source=. --remote=origin >nul || goto :fin_error
+  )
+) else (
+  echo   [i] No se encontro GitHub CLI ^(gh^). Si el repositorio aun no existe,
+  echo       crealo en https://github.com/new con el nombre "%GH_REPO%" y vuelve a ejecutar.
+)
+
+REM ---------- Identidad de Git (solo si no esta configurada) ----------
+git config user.name >nul 2>nul || git config user.name "%GH_USER%"
+git config user.email >nul 2>nul || git config user.email "%GH_USER%@users.noreply.github.com"
+
+REM ---------- Subir el codigo ----------
+echo   [4/6] Guardando y subiendo el codigo a la rama %MAIN_BRANCH%...
+git add -A
+for /f "usebackq delims=" %%t in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm'"`) do set "SELLO=%%t"
+if not defined SELLO set "SELLO=%date% %time:~0,5%"
+git commit -m "Actualizacion %SELLO%" >nul 2>nul
+if errorlevel 1 echo   [i] No hay cambios nuevos en el codigo fuente.
+git push -u origin %MAIN_BRANCH% || goto :fin_error
+
+REM ---------- Publicar la página ----------
+echo   [5/6] Publicando la pagina en la rama %PAGES_BRANCH%...
+set "TMP_DEPLOY=%TEMP%\ratonz-deploy-%RANDOM%"
+mkdir "%TMP_DEPLOY%" || goto :fin_error
+xcopy /e /i /q /y "dist" "%TMP_DEPLOY%" >nul || goto :fin_error
+
+pushd "%TMP_DEPLOY%"
+git init -b %PAGES_BRANCH% >nul 2>nul || (
+  git init >nul
+  git checkout -b %PAGES_BRANCH% >nul 2>nul
+)
+git config user.name >nul 2>nul || git config user.name "%GH_USER%"
+git config user.email >nul 2>nul || git config user.email "%GH_USER%@users.noreply.github.com"
+git add -A
+git commit -m "Publicacion %SELLO%" >nul
+git push --force "%REMOTE_URL%" %PAGES_BRANCH% || (
+  popd
+  rmdir /s /q "%TMP_DEPLOY%"
+  goto :fin_error
+)
+popd
+rmdir /s /q "%TMP_DEPLOY%"
+
+REM ---------- Activar GitHub Pages ----------
+echo   [6/6] Activando GitHub Pages...
+if defined HAS_GH (
+  gh api -X POST "repos/%GH_USER%/%GH_REPO%/pages" -f "source[branch]=%PAGES_BRANCH%" -f "source[path]=/" >nul 2>nul
+  if errorlevel 1 (
+    gh api -X PUT "repos/%GH_USER%/%GH_REPO%/pages" -f "source[branch]=%PAGES_BRANCH%" -f "source[path]=/" >nul 2>nul
+  )
+  echo       Listo.
+) else (
+  echo       Sin gh no se puede activar automaticamente. Ve a:
+  echo       https://github.com/%GH_USER%/%GH_REPO%/settings/pages
+  echo       y elige la rama "%PAGES_BRANCH%" como origen.
 )
 
 echo.
-echo El script guardara, hara commit y subira los cambios al repositorio remoto.
-choice /c YN /m "¿Continuar y subir a GitHub"
-if errorlevel 2 exit /b 0
-
-:: 4. Preparar y subir cambios
-git add .
-git diff --cached --quiet
-if errorlevel 1 (
-  set /p "MESSAGE=Mensaje para el commit [Release Raton Z]: "
-  if not defined MESSAGE set "MESSAGE=Release Raton Z"
-  call git commit -m "!MESSAGE!"
-  if errorlevel 1 exit /b 1
-)
-
-echo [4/4] Subiendo cambios a GitHub (!BRANCH!)...
-git push origin "!BRANCH!"
-if errorlevel 1 exit /b 1
-
+echo   ======================================
+echo    Despliegue completado con exito
+echo   ======================================
 echo.
-echo ========================================================
-echo ¡Build verificado y release subido con exito!
-echo Asegurate de tener configurado en GitHub:
-echo Settings - Pages - Source: GitHub Actions
-echo Sigue el despliegue en: https://github.com/CoipoNorte/Raton-Z/actions
-echo URL de tu juego: https://coiponorte.github.io/Raton-Z/
-echo ========================================================
+echo    Codigo:  %REMOTE_URL%
+echo    Pagina:  %PAGES_URL%
+echo.
+echo    La primera vez puede tardar 1-2 minutos en aparecer.
+echo.
 pause
-endlocal
+exit /b 0
+
+:fin_error
+echo.
+echo   [!] El despliegue se detuvo por un error. Revisa el mensaje de arriba.
+echo.
+pause
+exit /b 1
