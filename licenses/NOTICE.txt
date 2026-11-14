@@ -1,0 +1,14 @@
+Raton Z - Third-Party Notices
+
+The game uses the following open-source libraries and typefaces.
+Their license texts are distributed alongside this notice.
+
+Three.js: MIT, three.js authors
+React and React DOM: MIT, Meta Platforms, Inc. and affiliates
+Lucide: ISC, Lucide Contributors and Feather contributors
+Barlow Condensed: SIL Open Font License 1.1
+DM Sans: SIL Open Font License 1.1
+IBM Plex Mono: SIL Open Font License 1.1
+
+Character models, procedural environments, interface portraits, and sound
+effects in this implementation were created in code for Raton Z.
